@@ -1,0 +1,722 @@
+-- ╔══════════════════════════════════════════╗
+-- ║   RockPlayerSystem v7 (Server)          ║
+-- ║   حطه في ServerScriptService            ║
+-- ║   ✅ اللاعب ما يموت نهائياً — Dead       ║
+-- ║      state مقفل + health clamp          ║
+-- ║   ✅ حماية من البنق والتلاعب             ║
+-- ║   ✅ ما يرجع سبون بعد الاصطدام          ║
+-- ╚══════════════════════════════════════════╝
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local RaceEvents       = ReplicatedStorage:WaitForChild("RaceEvents")
+local SpawnRockPlayer  = RaceEvents:WaitForChild("SpawnRockPlayer")
+local RemoveRockPlayer = RaceEvents:WaitForChild("RemoveRockPlayer")
+
+local RockAutoRespawn = RaceEvents:FindFirstChild("RockAutoRespawn")
+if not RockAutoRespawn then
+	RockAutoRespawn = Instance.new("RemoteEvent"); RockAutoRespawn.Name = "RockAutoRespawn"; RockAutoRespawn.Parent = RaceEvents
+end
+
+local RockCamDir = RaceEvents:FindFirstChild("RockCamDir")
+if not RockCamDir then
+	RockCamDir = Instance.new("RemoteEvent"); RockCamDir.Name = "RockCamDir"; RockCamDir.Parent = RaceEvents
+end
+
+local RockTemplate = workspace:WaitForChild("RockPart")
+
+local AUTO_LIFE    = 12
+local FALL_Y       = -50
+
+local ROCK_SPEED_BASE   = 35
+local FIXED_SPAWN       = Vector3.new(372.8, 44.933, 14)
+local INITIAL_PUSH_DIR  = Vector3.new(-1, 0, 0)
+
+local HIT = {
+	MIN_SPEED           = 8,
+	HORIZONTAL_MULT     = 2.8,
+	MAX_HORIZONTAL_VEL  = 220,
+	UP_RATIO            = 0.55,
+	MIN_UP_VEL          = 30,
+	MAX_UP_VEL          = 160,
+	RAGDOLL_TIME_MULT   = 0.022,
+	MIN_RAGDOLL_TIME    = 0.4,
+	MAX_RAGDOLL_TIME    = 3.0,
+	ROCK_SLOWDOWN       = 0.30,
+	SOFT_PUSH_VEL       = 35,
+	SOFT_UP_VEL         = 25,
+	SOFT_RAGDOLL_TIME   = 0.3,
+	HIT_COOLDOWN        = 0.8,
+	MAX_ROCK_SPEED              = 120,
+	MAX_CLIENT_VELOCITY         = 150,
+	SPEED_DISCREPANCY_THRESHOLD = 40,
+	HIT_GRACE_PERIOD            = 4.0,
+}
+
+local rockColors = {
+	Color3.fromRGB(255,60,60), Color3.fromRGB(60,120,255), Color3.fromRGB(60,220,60),
+	Color3.fromRGB(255,220,40), Color3.fromRGB(100,0,255), Color3.fromRGB(255,140,40),
+	Color3.fromRGB(40,220,220), Color3.fromRGB(255,100,180), Color3.fromRGB(255,255,255), Color3.fromRGB(50,50,50),
+}
+
+local activeRocks = {}
+local playerCamDir = {}
+local rockServerData = {}
+local playerLastHitTime = {}
+
+-- ╔══════════════════════════════════════════════════════════════════╗
+-- ║  ✅ نظام الخلود النووي v7                                      ║
+-- ║                                                                ║
+-- ║  ليش الطرق السابقة ما نفعت:                                   ║
+-- ║  - ForceField يمنع TakeDamage بس مو الضرر المباشر             ║
+-- ║  - Health lock بالفريم متأخر — الموت يصير قبل ما نلحق         ║
+-- ║  - البنق يخلي الفيزياء تسوي ضرر سقوط/اصطدام مباشر            ║
+-- ║                                                                ║
+-- ║  الحل النهائي:                                                  ║
+-- ║  1. نقفل Humanoid Dead state = مستحيل يموت                    ║
+-- ║  2. HealthChanged = نرجع الهيلث فوراً لأي ضرر                  ║
+-- ║  3. ForceField للحماية الإضافية                                 ║
+-- ║  4. لو وصل 0 بأي طريقة = نرجعه 100% بدون ما يصير أنيميشن    ║
+-- ╚══════════════════════════════════════════════════════════════════╝
+
+local immortalityData = {}
+
+local function makePlayerImmortal(player)
+	local character = player.Character
+	if not character then return end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+
+	-- ننظف القديم
+	local old = immortalityData[player.UserId]
+	if old then
+		if old.healthConn then old.healthConn:Disconnect() end
+		if old.stateConn then old.stateConn:Disconnect() end
+		if old.forceField and old.forceField.Parent then old.forceField:Destroy() end
+	end
+
+	-- ╔═══════════════════════════════════════════════════════════╗
+	-- ║  الطبقة 1: نقفل حالة الموت نهائياً                       ║
+	-- ║  Humanoid ما يقدر يدخل Dead state = ما يموت أبداً       ║
+	-- ║  = ما يشغّل أنيميشن الموت أبداً                          ║
+	-- ╚═══════════════════════════════════════════════════════════╝
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+
+	-- ╔═══════════════════════════════════════════════════════════╗
+	-- ║  الطبقة 2: HealthChanged — أسرع من Heartbeat             ║
+	-- ║  يتفعل لحظة ما يتغير الهيلث = نرجعه فوراً              ║
+	-- ║  ما ننتظر الفريم الجاي                                   ║
+	-- ╚═══════════════════════════════════════════════════════════╝
+	humanoid.Health = humanoid.MaxHealth
+
+	local healthConn
+	healthConn = humanoid.HealthChanged:Connect(function(newHealth)
+		if not isRaceActive() then return end
+		if not humanoid or not humanoid.Parent then return end
+
+		if newHealth < humanoid.MaxHealth then
+			-- ✅ نرجع الهيلث فوراً — قبل ما الإنجن يشيك إذا وصل 0
+			humanoid.Health = humanoid.MaxHealth
+		end
+	end)
+
+	-- ╔═══════════════════════════════════════════════════════════╗
+	-- ║  الطبقة 3: حارس الحالة                                   ║
+	-- ║  لو بأي طريقة دخل Dead state (ما المفروض)               ║
+	-- ║  نرجعه فوراً لـ Running                                  ║
+	-- ╚═══════════════════════════════════════════════════════════╝
+	local stateConn
+	stateConn = humanoid.StateChanged:Connect(function(_, newState)
+		if not isRaceActive() then return end
+		if not humanoid or not humanoid.Parent then return end
+
+		if newState == Enum.HumanoidStateType.Dead then
+			-- ✅ مستحيل! نرجعه حي
+			humanoid.Health = humanoid.MaxHealth
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+			humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+			print("[IMMORTAL] " .. player.Name .. " حاول يموت — منعناه!")
+		end
+	end)
+
+	-- ╔═══════════════════════════════════════════════════════════╗
+	-- ║  الطبقة 4: ForceField مخفي (حماية إضافية)                ║
+	-- ╚═══════════════════════════════════════════════════════════╝
+	for _, ff in ipairs(character:GetChildren()) do
+		if ff:IsA("ForceField") then ff:Destroy() end
+	end
+
+	local forceField = Instance.new("ForceField")
+	forceField.Name = "RaceImmortalFF"
+	forceField.Visible = false
+	forceField.Parent = character
+
+	immortalityData[player.UserId] = {
+		healthConn = healthConn,
+		stateConn = stateConn,
+		forceField = forceField,
+		humanoid = humanoid,
+	}
+
+	print("[IMMORTAL] " .. player.Name .. " صار خالد")
+end
+
+local function removePlayerImmortality(player)
+	local data = immortalityData[player.UserId]
+	if not data then return end
+
+	if data.healthConn then data.healthConn:Disconnect() end
+	if data.stateConn then data.stateConn:Disconnect() end
+	if data.forceField and data.forceField.Parent then data.forceField:Destroy() end
+
+	-- ✅ نرجع Dead state عشان اللاعب يقدر يموت عادي بعد السباق
+	if data.humanoid and data.humanoid.Parent then
+		data.humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+	end
+
+	immortalityData[player.UserId] = nil
+	print("[IMMORTAL] " .. player.Name .. " رجع عادي")
+end
+
+local function removeAllImmortality()
+	for userId in pairs(immortalityData) do
+		local player = Players:GetPlayerByUserId(userId)
+		if player then
+			removePlayerImmortality(player)
+		else
+			local data = immortalityData[userId]
+			if data then
+				if data.healthConn then data.healthConn:Disconnect() end
+				if data.stateConn then data.stateConn:Disconnect() end
+				if data.forceField and data.forceField.Parent then data.forceField:Destroy() end
+			end
+			immortalityData[userId] = nil
+		end
+	end
+end
+
+local function isPlayerInHitGrace(player)
+	local lastHit = playerLastHitTime[player.UserId]
+	if not lastHit then return false end
+	return (os.clock() - lastHit) < HIT.HIT_GRACE_PERIOD
+end
+
+local function isRaceActive() return workspace:GetAttribute("RaceRunning") == true end
+
+RockCamDir.OnServerEvent:Connect(function(player, dir)
+	if typeof(dir) == "Vector3" and dir.Magnitude > 0.01 then playerCamDir[player.UserId] = dir.Unit end
+end)
+
+-- ╔══════════════════════════════════════════════════════════════════╗
+-- ║  نظام الراقدول                                                  ║
+-- ╚══════════════════════════════════════════════════════════════════╝
+
+local ragdollData = {}
+
+local function disableRagdoll(character, forceLevel)
+	local player = Players:GetPlayerFromCharacter(character); if not player then return end
+	local data = ragdollData[player.UserId]; if not data then return end
+	forceLevel = forceLevel or 1
+
+	for _, jd in ipairs(data.joints) do
+		pcall(function()
+			if jd.constraint then jd.constraint:Destroy() end
+			if jd.attachment0 then jd.attachment0:Destroy() end
+			if jd.attachment1 then jd.attachment1:Destroy() end
+			jd.motor.Enabled = true
+		end)
+	end
+	for _, pd in ipairs(data.parts) do
+		pcall(function() if pd.part and pd.part.Parent then pd.CanCollide = pd.wasCollide end end)
+	end
+
+	if forceLevel >= 2 then
+		for _, d in ipairs(character:GetDescendants()) do
+			pcall(function()
+				if d:IsA("BallSocketConstraint") and d.Name == "RagdollConstraint" then d:Destroy() end
+				if d:IsA("Attachment") and (d.Name == "RagdollAttach0" or d.Name == "RagdollAttach1") then d:Destroy() end
+			end)
+		end
+		for _, d in ipairs(character:GetDescendants()) do
+			pcall(function() if d:IsA("Motor6D") then d.Enabled = true end end)
+		end
+	end
+
+	if forceLevel >= 3 then
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
+			hrp.CFrame = hrp.CFrame + Vector3.new(0, 2, 0)
+		end
+	end
+
+	local h = data.humanoid
+	if h and h.Parent then
+		h.PlatformStand = false; h.AutoRotate = true
+		h:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
+		h:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+		h:SetStateEnabled(Enum.HumanoidStateType.Running, true)
+		h:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, true)
+
+		-- ✅ نتأكد Dead لسا مقفل
+		if isRaceActive() then
+			h:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+		end
+
+		if forceLevel >= 4 then
+			h:ChangeState(Enum.HumanoidStateType.Running)
+			task.defer(function()
+				if h and h.Parent then h:ChangeState(Enum.HumanoidStateType.GettingUp) end
+			end)
+		else
+			h:ChangeState(Enum.HumanoidStateType.GettingUp)
+		end
+
+		-- ✅ نرجع الهيلث
+		h.Health = h.MaxHealth
+	end
+
+	ragdollData[player.UserId] = nil
+end
+
+local function enableRagdoll(character)
+	local hum = character:FindFirstChildOfClass("Humanoid"); if not hum then return end
+	local hrp = character:FindFirstChild("HumanoidRootPart"); if not hrp then return end
+	local player = Players:GetPlayerFromCharacter(character); if not player then return end
+	if ragdollData[player.UserId] then return end
+
+	-- ✅ نتأكد الهيلث ماكس و Dead مقفل
+	hum.Health = hum.MaxHealth
+	hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+
+	hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, false)
+	hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
+	hum:SetStateEnabled(Enum.HumanoidStateType.Running, false)
+	hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, false)
+	hum:ChangeState(Enum.HumanoidStateType.Physics)
+	hum.AutoRotate = false; hum.PlatformStand = true
+
+	local savedJoints = {}
+	for _, d in ipairs(character:GetDescendants()) do
+		if d:IsA("Motor6D") and d.Name ~= "RootJoint" then
+			local jd = {motor = d, part0 = d.Part0, part1 = d.Part1}
+			table.insert(savedJoints, jd)
+			if d.Part0 and d.Part1 then
+				local a0 = Instance.new("Attachment"); a0.Name = "RagdollAttach0"; a0.CFrame = d.C0; a0.Parent = d.Part0
+				local a1 = Instance.new("Attachment"); a1.Name = "RagdollAttach1"; a1.CFrame = d.C1; a1.Parent = d.Part1
+				local ball = Instance.new("BallSocketConstraint"); ball.Name = "RagdollConstraint"
+				ball.Attachment0 = a0; ball.Attachment1 = a1; ball.LimitsEnabled = true; ball.TwistLimitsEnabled = true
+				ball.UpperAngle = 80; ball.TwistLowerAngle = -45; ball.TwistUpperAngle = 45; ball.Parent = d.Part0
+				jd.attachment0 = a0; jd.attachment1 = a1; jd.constraint = ball
+			end
+			d.Enabled = false
+		end
+	end
+
+	local parts = {}
+	for _, part in ipairs(character:GetDescendants()) do
+		if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+			table.insert(parts, {part = part, wasCollide = part.CanCollide}); part.CanCollide = true
+		end
+	end
+	ragdollData[player.UserId] = {joints = savedJoints, parts = parts, humanoid = hum, startTime = os.clock()}
+
+	task.delay(5, function()
+		if ragdollData[player.UserId] and character and character.Parent then
+			disableRagdoll(character, 1)
+		end
+	end)
+end
+
+-- حارس الراقدول
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+		local now = os.clock()
+		for userId, data in pairs(ragdollData) do
+			if not data.startTime then continue end
+			local elapsed = now - data.startTime
+			local player = Players:GetPlayerByUserId(userId)
+			if not player then ragdollData[userId] = nil; continue end
+			local char = player.Character
+			if not char or not char.Parent then ragdollData[userId] = nil; continue end
+
+			if elapsed >= 9 then disableRagdoll(char, 4)
+			elseif elapsed >= 8 then disableRagdoll(char, 4)
+			elseif elapsed >= 7 then disableRagdoll(char, 3)
+			elseif elapsed >= 6 then disableRagdoll(char, 2) end
+		end
+	end
+end)
+
+-- ╔══════════════════════════════════════════════════════════════════╗
+-- ║  حماية السقوط                                                   ║
+-- ╚══════════════════════════════════════════════════════════════════╝
+
+local SAFE_RETURN_Y = -80
+local SAFE_POSITION = Vector3.new(-316.8, -39, 12)
+
+local fallProtectionConns = {}
+
+local function enableFallProtection(player)
+	local character = player.Character
+	if not character then return end
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+
+	local old = fallProtectionConns[player.UserId]
+	if old then old:Disconnect() end
+
+	local conn
+	conn = RunService.Heartbeat:Connect(function()
+		if not isRaceActive() then conn:Disconnect(); fallProtectionConns[player.UserId] = nil; return end
+		if not hrp or not hrp.Parent then conn:Disconnect(); fallProtectionConns[player.UserId] = nil; return end
+
+		if hrp.Position.Y < SAFE_RETURN_Y then
+			if isPlayerInHitGrace(player) then
+				if hrp.Position.Y < SAFE_RETURN_Y - 40 then
+					hrp.AssemblyLinearVelocity = Vector3.zero
+					hrp.AssemblyAngularVelocity = Vector3.zero
+					hrp.CFrame = CFrame.new(SAFE_POSITION)
+					pcall(function() disableRagdoll(character) end)
+				end
+				return
+			end
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
+			hrp.CFrame = CFrame.new(SAFE_POSITION)
+			pcall(function() disableRagdoll(character) end)
+		end
+	end)
+
+	fallProtectionConns[player.UserId] = conn
+end
+
+local function disableFallProtection(player)
+	local conn = fallProtectionConns[player.UserId]
+	if conn then conn:Disconnect() end
+	fallProtectionConns[player.UserId] = nil
+end
+
+local function disableAllFallProtection()
+	for _, conn in pairs(fallProtectionConns) do if conn then conn:Disconnect() end end
+	fallProtectionConns = {}
+end
+
+-- ╔══════════════════════════════════════════════════════════════════╗
+-- ║  دوال مساعدة                                                   ║
+-- ╚══════════════════════════════════════════════════════════════════╝
+
+local function removeRock(userId)
+	local data = activeRocks[userId]; if not data then return end
+	data.cancelAuto = true
+	if data.deathConn then pcall(function() data.deathConn:Disconnect() end) end
+	if data.followConn then data.followConn:Disconnect() end
+	if data.fallCheckConn then data.fallCheckConn:Disconnect() end
+	if data.speedTrackConn then data.speedTrackConn:Disconnect() end
+	if data.rock and data.rock.Parent then data.rock:Destroy() end
+	rockServerData[userId] = nil
+	activeRocks[userId] = nil
+end
+
+local function removeAllRocks()
+	for userId in pairs(activeRocks) do removeRock(userId) end
+	for _, obj in ipairs(workspace:GetChildren()) do
+		if obj.Name:sub(1, 11) == "PlayerRock_" then obj:Destroy() end
+	end
+end
+
+local function restorePlayer(player)
+	local c = player.Character; if not c then return end
+	disableRagdoll(c)
+	for _, pt in ipairs(c:GetDescendants()) do
+		if pt:IsA("BasePart") then
+			if pt.Name ~= "HumanoidRootPart" then pt.Transparency = 0 end
+			pt.CanCollide = true
+		elseif pt:IsA("Decal") then pt.Transparency = 0 end
+	end
+	local hrp = c:FindFirstChild("HumanoidRootPart"); if hrp then hrp.Anchored = false end
+	local hm = c:FindFirstChildOfClass("Humanoid"); if hm then
+		hm.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Automatic
+		hm.AutoRotate = true; hm.WalkSpeed = 16; hm.JumpPower = 50; hm.JumpHeight = 7.2; hm.PlatformStand = false
+		hm.Health = hm.MaxHealth
+	end
+end
+
+local function applyRandomColor(rock)
+	local color = rockColors[math.random(1, #rockColors)]
+	if rock:IsA("BasePart") then rock.Color = color end
+	for _, child in ipairs(rock:GetDescendants()) do if child:IsA("BasePart") then child.Color = color end end
+	return color
+end
+
+-- ╔══════════════════════════════════════════════════════════════════╗
+-- ║  حساب السرعة الآمنة                                            ║
+-- ╚══════════════════════════════════════════════════════════════════╝
+
+local function getSafeRockSpeed(rock, ownerUserId)
+	local clientVel = rock.AssemblyLinearVelocity
+	local clientSpeed = clientVel.Magnitude
+	local serverSpeed = 0
+	local serverData = rockServerData[ownerUserId]
+	if serverData and serverData.speed then serverSpeed = serverData.speed end
+
+	local safeSpeed
+	if math.abs(clientSpeed - serverSpeed) > HIT.SPEED_DISCREPANCY_THRESHOLD then
+		safeSpeed = math.min(clientSpeed, serverSpeed)
+	else
+		safeSpeed = (clientSpeed + serverSpeed) / 2
+	end
+	safeSpeed = math.min(safeSpeed, HIT.MAX_ROCK_SPEED)
+
+	local safeDirection
+	if serverData and serverData.direction and serverData.direction.Magnitude > 0.1 then
+		safeDirection = serverData.direction.Unit
+	elseif clientVel.Magnitude > 1 then
+		safeDirection = clientVel.Unit
+	else
+		safeDirection = INITIAL_PUSH_DIR
+	end
+
+	return safeSpeed, safeDirection
+end
+
+-- ╔══════════════════════════════════════════════════════════════════╗
+-- ║  نظام الاصطدام v7                                               ║
+-- ╚══════════════════════════════════════════════════════════════════╝
+
+local function handleRockHit(rock, rockOwner, hitChar, hitHRP, hitPlayer)
+	local safeSpeed, safeDirection = getSafeRockSpeed(rock, rockOwner.UserId)
+
+	local flatComponent = math.abs(safeDirection.X) * safeSpeed + math.abs(safeDirection.Z) * safeSpeed
+	local vertComponent = math.abs(safeDirection.Y) * safeSpeed * 0.7
+	local effectiveSpeed = math.min(flatComponent + vertComponent, HIT.MAX_ROCK_SPEED)
+
+	local pushbackDir = Vector3.new(1, 0, 0)
+	local flatDir = Vector3.new(safeDirection.X, 0, safeDirection.Z)
+	local velDir
+	if flatDir.Magnitude > 0.1 then
+		velDir = flatDir.Unit
+	else
+		local toPlayer = hitHRP.Position - rock.Position
+		local flatToPlayer = Vector3.new(toPlayer.X, 0, toPlayer.Z)
+		velDir = if flatToPlayer.Magnitude > 0.5 then flatToPlayer.Unit else pushbackDir
+	end
+
+	local hitDir = (pushbackDir * 0.7 + velDir * 0.3)
+	hitDir = if hitDir.Magnitude > 0.01 then hitDir.Unit else pushbackDir
+
+	playerLastHitTime[hitPlayer.UserId] = os.clock()
+
+	-- ✅ نتأكد الخلود شغال + الهيلث ماكس
+	makePlayerImmortal(hitPlayer)
+	local hitHum = hitChar:FindFirstChildOfClass("Humanoid")
+	if hitHum then
+		hitHum.Health = hitHum.MaxHealth
+		hitHum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+	end
+
+	enableRagdoll(hitChar)
+	enableFallProtection(hitPlayer)
+
+	if effectiveSpeed < HIT.MIN_SPEED then
+		hitHRP.AssemblyLinearVelocity = Vector3.new(HIT.SOFT_PUSH_VEL, HIT.SOFT_UP_VEL, 0)
+		task.delay(HIT.SOFT_RAGDOLL_TIME, function()
+			if hitChar and hitChar.Parent then disableRagdoll(hitChar) end
+		end)
+		return
+	end
+
+	local playerHSpeed = math.min(effectiveSpeed * HIT.HORIZONTAL_MULT, HIT.MAX_HORIZONTAL_VEL)
+	local playerUpSpeed = math.clamp(playerHSpeed * HIT.UP_RATIO, HIT.MIN_UP_VEL, HIT.MAX_UP_VEL)
+	local finalHSpeed = math.min(playerHSpeed, HIT.MAX_CLIENT_VELOCITY)
+	local finalUpSpeed = math.min(playerUpSpeed, HIT.MAX_UP_VEL)
+
+	hitHRP.AssemblyLinearVelocity = Vector3.new(
+		hitDir.X * finalHSpeed, finalUpSpeed, hitDir.Z * finalHSpeed
+	)
+	hitHRP.AssemblyAngularVelocity = Vector3.new(0, 0, math.min(finalHSpeed * 0.25, 40))
+
+	local rockVel = rock.AssemblyLinearVelocity
+	rock.AssemblyLinearVelocity = Vector3.new(
+		rockVel.X * (1 - HIT.ROCK_SLOWDOWN), rockVel.Y, rockVel.Z * (1 - HIT.ROCK_SLOWDOWN)
+	)
+
+	local ragdollTime = math.clamp(effectiveSpeed * HIT.RAGDOLL_TIME_MULT, HIT.MIN_RAGDOLL_TIME, HIT.MAX_RAGDOLL_TIME)
+
+	task.delay(ragdollTime, function()
+		if hitChar and hitChar.Parent then disableRagdoll(hitChar) end
+	end)
+
+	print(string.format("[Hit v7] %s → %s | Speed:%.0f Push:%.0f Up:%.0f Ragdoll:%.1fs",
+		rockOwner.Name, hitPlayer.Name, safeSpeed, finalHSpeed, finalUpSpeed, ragdollTime))
+end
+
+-- ╔══════════════════════════════════════════════════════════════════╗
+-- ║  سبون الصخرة                                                   ║
+-- ╚══════════════════════════════════════════════════════════════════╝
+
+local function spawnRockForPlayer(player, forcedPos)
+	if not isRaceActive() then return end
+	removeRock(player.UserId)
+
+	local char = player.Character; if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart"); if not hrp then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum and hum.Health <= 0 then return end
+
+	for _, pt in ipairs(char:GetDescendants()) do
+		if pt:IsA("BasePart") then pt.Transparency = 1; pt.CanCollide = false end
+	end
+	if hum then hum.WalkSpeed = 0; hum.JumpPower = 0; hum.JumpHeight = 0; hum.AutoRotate = false; hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end
+	hrp.Anchored = true; hrp.CFrame = CFrame.new(FIXED_SPAWN)
+
+	local rock = RockTemplate:Clone()
+	rock.Name = "PlayerRock_" .. player.UserId
+	rock.CFrame = CFrame.new(FIXED_SPAWN); rock.Anchored = false; rock.CanCollide = true; rock.Transparency = 0
+	for _, child in ipairs(rock:GetChildren()) do if child:IsA("BillboardGui") then child:Destroy() end end
+	local rockColor = applyRandomColor(rock)
+	rock.Size = RockTemplate.Size * (1 + math.random() * 0.35)
+	rock.Parent = workspace
+	pcall(function() rock:SetNetworkOwner(player) end)
+
+	task.defer(function()
+		if rock and rock.Parent then rock.AssemblyLinearVelocity = INITIAL_PUSH_DIR * ROCK_SPEED_BASE end
+	end)
+
+	local bb = Instance.new("BillboardGui"); bb.Name = "RockNameTag"
+	bb.Size = UDim2.new(0, 200, 0, 50); bb.StudsOffset = Vector3.new(0, 1.5, 0)
+	bb.AlwaysOnTop = true; bb.MaxDistance = math.huge; bb.ClipsDescendants = false; bb.Active = true
+	bb:SetAttribute("RockColorR", rockColor.R); bb:SetAttribute("RockColorG", rockColor.G); bb:SetAttribute("RockColorB", rockColor.B)
+	bb:SetAttribute("PlayerName", player.Name)
+	local lbl = Instance.new("TextLabel"); lbl.Name = "NameLabel"; lbl.Size = UDim2.new(1, 0, 1, 0)
+	lbl.BackgroundTransparency = 1; lbl.Text = "🪨 " .. player.Name; lbl.TextColor3 = rockColor
+	lbl.TextScaled = true; lbl.Font = Enum.Font.FredokaOne; lbl.TextStrokeTransparency = 0; lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	lbl.Parent = bb
+	local ns = Instance.new("UIStroke"); ns.Color = Color3.fromRGB(0, 0, 0); ns.Thickness = 2.5; ns.Parent = lbl
+	bb.Parent = rock
+
+	rockServerData[player.UserId] = { lastPos = rock.Position, lastTime = os.clock(), speed = 0, direction = INITIAL_PUSH_DIR }
+
+	local speedTrackConn
+	speedTrackConn = RunService.Heartbeat:Connect(function()
+		if not rock or not rock.Parent then if speedTrackConn then speedTrackConn:Disconnect() end; return end
+		local sData = rockServerData[player.UserId]; if not sData then return end
+		local now = os.clock(); local dt = now - sData.lastTime
+		if dt < 0.1 then return end
+		local currentPos = rock.Position; local delta = currentPos - sData.lastPos
+		sData.speed = delta.Magnitude / dt
+		if delta.Magnitude > 0.1 then sData.direction = delta.Unit end
+		sData.lastPos = currentPos; sData.lastTime = now
+	end)
+
+	local followAccum = 0
+	local followConn
+	followConn = RunService.Heartbeat:Connect(function(dt)
+		if not rock or not rock.Parent then if followConn then followConn:Disconnect() end; return end
+		if not isRaceActive() then if followConn then followConn:Disconnect() end; return end
+		local c = player.Character; if not c then return end
+		local h = c:FindFirstChild("HumanoidRootPart"); if not h then return end
+		followAccum += dt; if followAccum < 0.20 then return end; followAccum = 0
+		h.CFrame = CFrame.new(rock.Position)
+	end)
+
+	local lastHitAt = {}
+	rock.Touched:Connect(function(hit)
+		if not rock or not rock.Parent or not isRaceActive() then return end
+		local hitChar = hit:FindFirstAncestorOfClass("Model"); if not hitChar then return end
+		local hitHum = hitChar:FindFirstChildOfClass("Humanoid")
+		local hitHRP = hitChar:FindFirstChild("HumanoidRootPart")
+		if not hitHum or not hitHRP then return end
+		local hitPlayer = Players:GetPlayerFromCharacter(hitChar)
+		if not hitPlayer or hitPlayer.UserId == player.UserId or activeRocks[hitPlayer.UserId] then return end
+		local now = os.clock()
+		if lastHitAt[hitPlayer.UserId] and (now - lastHitAt[hitPlayer.UserId]) < HIT.HIT_COOLDOWN then return end
+		lastHitAt[hitPlayer.UserId] = now
+		handleRockHit(rock, player, hitChar, hitHRP, hitPlayer)
+	end)
+
+	local data = { rock = rock, followConn = followConn, speedTrackConn = speedTrackConn, cancelAuto = false, respawning = false, deathConn = nil }
+	activeRocks[player.UserId] = data
+
+	if hum then
+		data.deathConn = hum.Died:Connect(function() removeRock(player.UserId) end)
+	end
+
+	local function doAutoRespawn()
+		if data.respawning or activeRocks[player.UserId] ~= data or not isRaceActive() then return end
+		data.respawning = true; data.cancelAuto = true
+		removeRock(player.UserId)
+		RockAutoRespawn:FireClient(player)
+		task.wait(0.3)
+		if player.Parent and isRaceActive() then spawnRockForPlayer(player, nil) end
+	end
+
+	task.spawn(function()
+		local elapsed = 0
+		while elapsed < AUTO_LIFE do
+			task.wait(1); elapsed += 1
+			if data.cancelAuto or not activeRocks[player.UserId] or activeRocks[player.UserId] ~= data or not isRaceActive() then return end
+		end
+		doAutoRespawn()
+	end)
+
+	local fallCheckConn
+	fallCheckConn = RunService.Heartbeat:Connect(function()
+		if data.cancelAuto or not isRaceActive() then fallCheckConn:Disconnect(); return end
+		if not rock or not rock.Parent then fallCheckConn:Disconnect(); doAutoRespawn(); return end
+		if rock.Position.Y < FALL_Y then fallCheckConn:Disconnect(); doAutoRespawn() end
+	end)
+	data.fallCheckConn = fallCheckConn
+end
+
+-- ╔══════════════════════════════════════════════════════════════════╗
+-- ║  أحداث النظام                                                   ║
+-- ╚══════════════════════════════════════════════════════════════════╝
+
+workspace:GetAttributeChangedSignal("RaceRunning"):Connect(function()
+	if isRaceActive() then
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player.Character then
+				makePlayerImmortal(player)
+				enableFallProtection(player)
+			end
+		end
+	else
+		removeAllRocks()
+		removeAllImmortality()
+		disableAllFallProtection()
+	end
+end)
+
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(function(char)
+		ragdollData[player.UserId] = nil
+		playerLastHitTime[player.UserId] = nil
+		if isRaceActive() then
+			task.wait(0.3)
+			makePlayerImmortal(player)
+			enableFallProtection(player)
+		end
+	end)
+end)
+
+SpawnRockPlayer.Event:Connect(function(player, forcedPos)
+	if not player then return end; spawnRockForPlayer(player, forcedPos)
+end)
+
+RemoveRockPlayer.Event:Connect(function(player)
+	if not player then return end; removeRock(player.UserId); restorePlayer(player)
+	if not isRaceActive() then removePlayerImmortality(player) end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	removeRock(player.UserId); removePlayerImmortality(player); disableFallProtection(player)
+	ragdollData[player.UserId] = nil; playerCamDir[player.UserId] = nil
+	rockServerData[player.UserId] = nil; playerLastHitTime[player.UserId] = nil
+end)
+
+print("[RockPlayerSystem v7] Ready! — Dead State DISABLED = True Immortality")
