@@ -1,0 +1,697 @@
+-- ╔═══════════════════════════════════════════════════════════════════╗
+-- ║   RaceUI (LocalScript) — Team Edition                           ║
+-- ║   حطه في StarterPlayerScripts                                   ║
+-- ║   ✅ إصلاح: الصورة تتحمّل قبل ما يطلع الفريم + كاش            ║
+-- ║                                                                 ║
+-- ║   ✦ كل شي نسبي 100% — ما في بكسل ثابت يكسر التناسق          ║
+-- ║   ✦ غيّر أي إعداد وكل شي يتبعه تلقائي                        ║
+-- ╚═══════════════════════════════════════════════════════════════════╝
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService      = game:GetService("TweenService")
+local SoundService      = game:GetService("SoundService")
+local RunService        = game:GetService("RunService")
+local ContentProvider   = game:GetService("ContentProvider")
+
+local localPlayer = Players.LocalPlayer
+local playerGui   = localPlayer:WaitForChild("PlayerGui")
+
+local RaceEvents      = ReplicatedStorage:WaitForChild("RaceEvents")
+local StartCountdown  = RaceEvents:WaitForChild("StartCountdown")
+local ShowWinner      = RaceEvents:WaitForChild("ShowWinner")
+local UpdateStatus    = RaceEvents:WaitForChild("UpdateStatus")
+local SyncRaceState   = RaceEvents:WaitForChild("SyncRaceState")
+local UpdateTimer     = RaceEvents:WaitForChild("UpdateTimer")
+local AssignTeam      = RaceEvents:WaitForChild("AssignTeam")
+local UpdateTeamCount = RaceEvents:WaitForChild("UpdateTeamCount")
+local KickOffState    = RaceEvents:WaitForChild("KickOffState")
+local PlaySound       = RaceEvents:WaitForChild("PlaySound")
+
+
+local CONFIG = {
+
+	Font            = Enum.Font.FredokaOne,
+	TextColor       = Color3.fromRGB(255, 255, 255),
+	StrokeColor     = Color3.fromRGB(0, 0, 0),
+	StrokeThickness = 2,
+
+	StatusBar = {
+		Visible           = true,
+		PosY              = 0.01,
+		Width             = 0.45,
+		Height            = 0.063,
+		CornerRadius      = 0.3,
+		BgColor           = Color3.fromRGB(20, 20, 20),
+		BgTransparency    = 0.25,
+		StrokeColor       = Color3.fromRGB(80, 80, 80),
+		StrokeThickness   = 2,
+		WarningColor      = Color3.fromRGB(255, 237, 237),
+		WarningThreshold  = 30,
+		FlashThreshold    = 10,
+		FlashBgColor      = Color3.fromRGB(60, 20, 20),
+		HintsEnabled      = true,
+		HintInterval      = 16,
+		HintDuration      = 3,
+		HintFadeTime      = 0.1,
+		HintMessages      = { "Run to win before time runs out!" },
+	},
+
+	TeamCount = {
+		Visible         = false,
+		Alignment       = "Right",
+		PaddingX        = 0.01,
+		PosY            = 0.01,
+		Width           = 0.14,
+		Height          = 0.1,
+		CornerRadius    = 0.1,
+		BgColor         = Color3.fromRGB(20, 20, 20),
+		BgTransparency  = 0.2,
+		StrokeColor     = Color3.fromRGB(60, 60, 60),
+		StrokeThickness = 2,
+		RockColor       = Color3.fromRGB(255, 100, 100),
+		RunnerColor     = Color3.fromRGB(100, 220, 100),
+		RockEmoji       = "🪨",
+		RunnerEmoji     = "🏃",
+	},
+
+	Countdown = {
+		Visible         = true,
+		Width           = 0.25,
+		Height          = 0.12,
+		PosY            = 0.4,
+		GoColor         = Color3.fromRGB(0, 255, 80),
+		StrokeThickness = 4,
+		FadeInTime      = 0.2,
+		FadeOutTime     = 0.2,
+		DisplayDuration = 0.7,
+	},
+
+	Winner = {
+		Visible          = true,
+		Width            = 0.65,
+		Height           = 0.38,
+		PosY             = 0.5,
+		CornerRadius     = 0.04,
+		BgColor          = Color3.fromRGB(25, 25, 25),
+		StrokeThickness  = 3,
+		RockWinColor     = Color3.fromRGB(255, 100, 100),
+		RunnerWinColor   = Color3.fromRGB(100, 255, 120),
+		TitleColor       = Color3.fromRGB(255, 215, 0),
+		RockText         = "🪨 ROCK TEAM WINS!",
+		RunnerText       = "🏃 RUNNERS WIN!",
+		InfoBgColor      = Color3.fromRGB(40, 40, 40),
+		InfoCorner       = 0.04,
+		InfoStrokeColor  = Color3.fromRGB(80, 80, 80),
+		AvatarBgColor          = Color3.fromRGB(60, 60, 60),
+		AvatarCorner           = 0.1,
+		RockFallbackColor      = Color3.fromRGB(80, 30, 30),
+		RunnerFallbackColor    = Color3.fromRGB(30, 80, 30),
+		RockTeamText     = "🪨 Rock Team",
+		RunnerTeamText   = "🏃 Runner Team",
+		RockTeamColor    = Color3.fromRGB(255, 100, 100),
+		RunnerTeamColor  = Color3.fromRGB(100, 220, 100),
+		ShowDuration     = 7,
+		AnimInTime       = 0.4,
+		AnimOutTime      = 0.3,
+		OffsetY          = 0.1,
+	},
+
+	YouWin = {
+		Visible          = true,
+		Width            = 0.45,
+		Height           = 0.08,
+		PosY             = 0.22,
+		CornerRadius     = 0.3,
+		BgColor          = Color3.fromRGB(255, 215, 0),
+		BgTransparency   = 0.1,
+		StrokeColor      = Color3.fromRGB(255, 255, 255),
+		StrokeThickness  = 3,
+		Text             = "🎉 YOUR TEAM WINS!",
+		TextColor        = Color3.fromRGB(30, 30, 30),
+		TextStrokeColor  = Color3.fromRGB(255, 255, 255),
+		TextStrokeThick  = 1.5,
+		FadeInTime       = 0.4,
+		ShowDuration     = 7,
+		FadeOutTime      = 0.3,
+	},
+
+	Sounds = {
+		IntermissionTick = { Id = "rbxassetid://134410911353980", Volume = 0.2 },
+		Winner           = { Id = "rbxassetid://134410911353980", Volume = 0.6 },
+		GetReady         = { Id = "rbxassetid://134410911353980", Volume = 0.4 },
+		CountdownGo      = { Id = "rbxassetid://134410911353980", Volume = 0.5 },
+	},
+}
+
+
+-- ╔═══════════════════════════════════════════════════════════════════╗
+-- ║   🖼️  كاش صور الأفاتار                                         ║
+-- ╚═══════════════════════════════════════════════════════════════════╝
+
+local avatarCache = {}  -- { [userId] = "rbxthumb://..." }
+
+local function getAvatarUrl(userId)
+	if avatarCache[userId] then
+		return avatarCache[userId]
+	end
+
+	local ok, img = pcall(function()
+		return Players:GetUserThumbnailAsync(
+			userId,
+			Enum.ThumbnailType.HeadShot,
+			Enum.ThumbnailSize.Size420x420
+		)
+	end)
+
+	if ok and img and img ~= "" then
+		avatarCache[userId] = img
+		return img
+	end
+
+	return nil
+end
+
+-- ✅ نحمّل صور كل اللاعبين الموجودين من البداية (في الخلفية)
+task.spawn(function()
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.spawn(function()
+			getAvatarUrl(player.UserId)
+		end)
+	end
+end)
+
+-- ✅ لما لاعب جديد يدخل، نحمّل صورته بالخلفية
+Players.PlayerAdded:Connect(function(player)
+	task.spawn(function()
+		getAvatarUrl(player.UserId)
+	end)
+end)
+
+
+local function getAligned(alignment, paddingX, posY)
+	local anchorX, posX
+	if alignment == "Right" then
+		anchorX = 1;   posX = 1 - paddingX
+	elseif alignment == "Center" then
+		anchorX = 0.5; posX = 0.5
+	else
+		anchorX = 0;   posX = paddingX
+	end
+	return Vector2.new(anchorX, 0), UDim2.new(posX, 0, posY, 0)
+end
+
+local function addStroke(parent, color, thickness, mode)
+	local s = Instance.new("UIStroke")
+	s.Color        = color or CONFIG.StrokeColor
+	s.Thickness    = thickness or CONFIG.StrokeThickness
+	s.Transparency = 0
+	if mode then s.ApplyStrokeMode = mode end
+	s.Parent       = parent
+	return s
+end
+
+local function addTextStroke(lbl, color, thickness)
+	return addStroke(lbl, color or CONFIG.StrokeColor, thickness or CONFIG.StrokeThickness)
+end
+
+local function playGameSound(soundName)
+	local sd = CONFIG.Sounds[soundName]
+	if not sd then return end
+	local s = Instance.new("Sound")
+	s.SoundId = sd.Id
+	s.Volume  = sd.Volume
+	s.Parent  = SoundService
+	s:Play()
+	s.Ended:Connect(function() s:Destroy() end)
+end
+
+
+-- ╔═══════════════════════════════════════════════════════════════════╗
+-- ║   🔨  بناء الـ GUI                                              ║
+-- ╚═══════════════════════════════════════════════════════════════════╝
+
+local gui = Instance.new("ScreenGui")
+gui.Name           = "RaceGuiTeam"
+gui.ResetOnSpawn   = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder   = 100
+gui.Parent         = playerGui
+
+local sb = CONFIG.StatusBar
+
+local statusBar = Instance.new("Frame")
+statusBar.Name                 = "StatusBar"
+statusBar.AnchorPoint          = Vector2.new(0.5, 0)
+statusBar.Position             = UDim2.new(0.5, 0, sb.PosY, 0)
+statusBar.Size                 = UDim2.new(sb.Width, 0, sb.Height, 0)
+statusBar.BackgroundColor3     = sb.BgColor
+statusBar.BackgroundTransparency = sb.BgTransparency
+statusBar.BorderSizePixel      = 0
+statusBar.Visible              = sb.Visible
+statusBar.Parent               = gui
+
+Instance.new("UICorner", statusBar).CornerRadius = UDim.new(sb.CornerRadius, 0)
+addStroke(statusBar, sb.StrokeColor, sb.StrokeThickness)
+
+local statusText = Instance.new("TextLabel")
+statusText.AnchorPoint          = Vector2.new(0.5, 0.5)
+statusText.Position             = UDim2.new(0.5, 0, 0.5, 0)
+statusText.Size                 = UDim2.new(0.92, 0, 0.8, 0)
+statusText.BackgroundTransparency = 1
+statusText.Font                 = CONFIG.Font
+statusText.Text                 = "Connecting..."
+statusText.TextColor3           = CONFIG.TextColor
+statusText.TextScaled           = true
+statusText.Parent               = statusBar
+addTextStroke(statusText)
+
+local tc = CONFIG.TeamCount
+local tcAnchor, tcPos = getAligned(tc.Alignment, tc.PaddingX, tc.PosY)
+
+local teamFrame = Instance.new("Frame")
+teamFrame.Name                 = "TeamCountFrame"
+teamFrame.AnchorPoint          = tcAnchor
+teamFrame.Position             = tcPos
+teamFrame.Size                 = UDim2.new(tc.Width, 0, tc.Height, 0)
+teamFrame.BackgroundColor3     = tc.BgColor
+teamFrame.BackgroundTransparency = tc.BgTransparency
+teamFrame.BorderSizePixel      = 0
+teamFrame.Visible              = tc.Visible
+teamFrame.Parent               = gui
+
+Instance.new("UICorner", teamFrame).CornerRadius = UDim.new(tc.CornerRadius, 0)
+addStroke(teamFrame, tc.StrokeColor, tc.StrokeThickness)
+
+local rockLabel = Instance.new("TextLabel")
+rockLabel.AnchorPoint          = Vector2.new(0.5, 0)
+rockLabel.Position             = UDim2.new(0.5, 0, 0.05, 0)
+rockLabel.Size                 = UDim2.new(0.9, 0, 0.43, 0)
+rockLabel.BackgroundTransparency = 1
+rockLabel.Font                 = CONFIG.Font
+rockLabel.Text                 = tc.RockEmoji .. " Rocks: 0"
+rockLabel.TextColor3           = tc.RockColor
+rockLabel.TextScaled           = true
+rockLabel.Parent               = teamFrame
+addTextStroke(rockLabel)
+
+local runnerLabel = Instance.new("TextLabel")
+runnerLabel.AnchorPoint          = Vector2.new(0.5, 1)
+runnerLabel.Position             = UDim2.new(0.5, 0, 0.95, 0)
+runnerLabel.Size                 = UDim2.new(0.9, 0, 0.43, 0)
+runnerLabel.BackgroundTransparency = 1
+runnerLabel.Font                 = CONFIG.Font
+runnerLabel.Text                 = tc.RunnerEmoji .. " Runners: 0"
+runnerLabel.TextColor3           = tc.RunnerColor
+runnerLabel.TextScaled           = true
+runnerLabel.Parent               = teamFrame
+addTextStroke(runnerLabel)
+
+local cd = CONFIG.Countdown
+
+local countdownLabel = Instance.new("TextLabel")
+countdownLabel.AnchorPoint          = Vector2.new(0.5, 0.5)
+countdownLabel.Position             = UDim2.new(0.5, 0, cd.PosY, 0)
+countdownLabel.Size                 = UDim2.new(cd.Width, 0, cd.Height, 0)
+countdownLabel.BackgroundTransparency = 1
+countdownLabel.Font                 = CONFIG.Font
+countdownLabel.Text                 = ""
+countdownLabel.TextColor3           = CONFIG.TextColor
+countdownLabel.TextScaled           = true
+countdownLabel.Visible              = false
+countdownLabel.Parent               = gui
+
+local countdownStroke = addStroke(countdownLabel, CONFIG.StrokeColor, cd.StrokeThickness)
+
+-- ══════════════════════════════════════════
+-- 🏆  واجهة الفائز
+-- ══════════════════════════════════════════
+
+local wn = CONFIG.Winner
+
+local winnerFrame = Instance.new("Frame")
+winnerFrame.AnchorPoint          = Vector2.new(0.5, 0.5)
+winnerFrame.Position             = UDim2.new(0.5, 0, wn.PosY, 0)
+winnerFrame.Size                 = UDim2.new(wn.Width, 0, wn.Height, 0)
+winnerFrame.BackgroundColor3     = wn.BgColor
+winnerFrame.BackgroundTransparency = 0
+winnerFrame.BorderSizePixel      = 0
+winnerFrame.Visible              = false
+winnerFrame.Parent               = gui
+
+Instance.new("UICorner", winnerFrame).CornerRadius = UDim.new(wn.CornerRadius, 0)
+
+local winnerStroke = addStroke(winnerFrame, wn.RunnerWinColor, wn.StrokeThickness)
+
+local winnerTitle = Instance.new("TextLabel")
+winnerTitle.AnchorPoint          = Vector2.new(0.5, 0)
+winnerTitle.Position             = UDim2.new(0.5, 0, 0.04, 0)
+winnerTitle.Size                 = UDim2.new(0.9, 0, 0.25, 0)
+winnerTitle.BackgroundTransparency = 1
+winnerTitle.Font                 = CONFIG.Font
+winnerTitle.Text                 = "🏆 WINNER!"
+winnerTitle.TextColor3           = wn.TitleColor
+winnerTitle.TextScaled           = true
+winnerTitle.Parent               = winnerFrame
+addTextStroke(winnerTitle, CONFIG.StrokeColor, 3)
+
+local playerInfo = Instance.new("Frame")
+playerInfo.AnchorPoint          = Vector2.new(0.5, 1)
+playerInfo.Position             = UDim2.new(0.5, 0, 0.96, 0)
+playerInfo.Size                 = UDim2.new(0.92, 0, 0.6, 0)
+playerInfo.BackgroundColor3     = wn.InfoBgColor
+playerInfo.BackgroundTransparency = 0
+playerInfo.BorderSizePixel      = 0
+playerInfo.Parent               = winnerFrame
+
+Instance.new("UICorner", playerInfo).CornerRadius = UDim.new(wn.InfoCorner, 0)
+addStroke(playerInfo, wn.InfoStrokeColor, 2)
+
+local avatarImg = Instance.new("ImageLabel")
+avatarImg.AnchorPoint            = Vector2.new(0, 0.5)
+avatarImg.Position               = UDim2.new(0.03, 0, 0.5, 0)
+avatarImg.Size                   = UDim2.new(0.28, 0, 0.85, 0)
+avatarImg.BackgroundColor3       = wn.AvatarBgColor
+avatarImg.BackgroundTransparency = 0
+avatarImg.BorderSizePixel        = 0
+avatarImg.ScaleType              = Enum.ScaleType.Fit
+avatarImg.Parent                 = playerInfo
+
+Instance.new("UIAspectRatioConstraint", avatarImg).AspectRatio = 1
+Instance.new("UICorner", avatarImg).CornerRadius = UDim.new(wn.AvatarCorner, 0)
+addStroke(avatarImg, Color3.fromRGB(100, 100, 100), 2)
+
+local infoContainer = Instance.new("Frame")
+infoContainer.AnchorPoint          = Vector2.new(0, 0.5)
+infoContainer.Position             = UDim2.new(0.36, 0, 0.5, 0)
+infoContainer.Size                 = UDim2.new(0.6, 0, 0.85, 0)
+infoContainer.BackgroundTransparency = 1
+infoContainer.Parent               = playerInfo
+
+local infoLayout = Instance.new("UIListLayout", infoContainer)
+infoLayout.FillDirection       = Enum.FillDirection.Vertical
+infoLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+infoLayout.VerticalAlignment   = Enum.VerticalAlignment.Center
+infoLayout.Padding             = UDim.new(0.05, 0)
+
+local winnerName = Instance.new("TextLabel")
+winnerName.Size                 = UDim2.new(1, 0, 0.45, 0)
+winnerName.BackgroundTransparency = 1
+winnerName.Font                 = CONFIG.Font
+winnerName.Text                 = "Player Name"
+winnerName.TextColor3           = CONFIG.TextColor
+winnerName.TextScaled           = true
+winnerName.TextXAlignment       = Enum.TextXAlignment.Left
+winnerName.LayoutOrder          = 1
+winnerName.Parent               = infoContainer
+addTextStroke(winnerName, CONFIG.StrokeColor, 2.5)
+
+local winnerTeamLabel = Instance.new("TextLabel")
+winnerTeamLabel.Size                 = UDim2.new(1, 0, 0.3, 0)
+winnerTeamLabel.BackgroundTransparency = 1
+winnerTeamLabel.Font                 = CONFIG.Font
+winnerTeamLabel.Text                 = wn.RunnerTeamText
+winnerTeamLabel.TextColor3           = wn.RunnerTeamColor
+winnerTeamLabel.TextScaled           = true
+winnerTeamLabel.TextXAlignment       = Enum.TextXAlignment.Left
+winnerTeamLabel.LayoutOrder          = 2
+winnerTeamLabel.Parent               = infoContainer
+addTextStroke(winnerTeamLabel)
+
+-- ══════════════════════════════════════════
+-- 🏅  إشعار "فريقك يفوز"
+-- ══════════════════════════════════════════
+
+local yw = CONFIG.YouWin
+
+local youWinFrame = Instance.new("Frame")
+youWinFrame.Name                 = "YouWinFrame"
+youWinFrame.AnchorPoint          = Vector2.new(0.5, 0)
+youWinFrame.Position             = UDim2.new(0.5, 0, yw.PosY, 0)
+youWinFrame.Size                 = UDim2.new(yw.Width, 0, yw.Height, 0)
+youWinFrame.BackgroundColor3     = yw.BgColor
+youWinFrame.BackgroundTransparency = yw.BgTransparency
+youWinFrame.BorderSizePixel      = 0
+youWinFrame.Visible              = false
+youWinFrame.Parent               = gui
+
+Instance.new("UICorner", youWinFrame).CornerRadius = UDim.new(yw.CornerRadius, 0)
+addStroke(youWinFrame, yw.StrokeColor, yw.StrokeThickness)
+
+local youWinLabel = Instance.new("TextLabel")
+youWinLabel.Size                 = UDim2.new(0.9, 0, 0.9, 0)
+youWinLabel.AnchorPoint          = Vector2.new(0.5, 0.5)
+youWinLabel.Position             = UDim2.new(0.5, 0, 0.5, 0)
+youWinLabel.BackgroundTransparency = 1
+youWinLabel.Font                 = CONFIG.Font
+youWinLabel.Text                 = yw.Text
+youWinLabel.TextColor3           = yw.TextColor
+youWinLabel.TextScaled           = true
+youWinLabel.Parent               = youWinFrame
+addStroke(youWinLabel, yw.TextStrokeColor, yw.TextStrokeThick)
+
+
+-- ╔═══════════════════════════════════════════════════════════════════╗
+-- ║   🔄  نظام التايمر + الرسائل التحفيزية                         ║
+-- ╚═══════════════════════════════════════════════════════════════════╝
+
+local myTeam             = nil
+local currentTimerSeconds = 0
+local isTimerActive      = false
+local isShowingHint      = false
+local hintToken          = 0
+local hintMessageIndex   = 0
+
+local function formatTime(seconds)
+	return string.format("⏱ %d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+local function displayTimer()
+	if not isTimerActive or isShowingHint then return end
+	statusText.Text       = formatTime(currentTimerSeconds)
+	statusText.TextColor3 = currentTimerSeconds <= sb.WarningThreshold and sb.WarningColor or CONFIG.TextColor
+	TweenService:Create(statusBar, TweenInfo.new(0.3), {
+		BackgroundColor3 = currentTimerSeconds <= sb.FlashThreshold and sb.FlashBgColor or sb.BgColor
+	}):Play()
+end
+
+local function showHintMessage()
+	if not sb.HintsEnabled or not isTimerActive then return end
+	if #sb.HintMessages == 0 then return end
+	isShowingHint = true
+	hintMessageIndex = (hintMessageIndex % #sb.HintMessages) + 1
+	local msg = sb.HintMessages[hintMessageIndex]
+	TweenService:Create(statusText, TweenInfo.new(sb.HintFadeTime), { TextTransparency = 1 }):Play()
+	task.delay(sb.HintFadeTime, function()
+		if not isTimerActive then isShowingHint = false return end
+		statusText.Text       = msg
+		statusText.TextColor3 = CONFIG.TextColor
+		TweenService:Create(statusText, TweenInfo.new(sb.HintFadeTime), { TextTransparency = 0 }):Play()
+		task.delay(sb.HintDuration, function()
+			if not isTimerActive then isShowingHint = false return end
+			TweenService:Create(statusText, TweenInfo.new(sb.HintFadeTime), { TextTransparency = 1 }):Play()
+			task.delay(sb.HintFadeTime, function()
+				isShowingHint = false
+				if not isTimerActive then return end
+				displayTimer()
+				TweenService:Create(statusText, TweenInfo.new(sb.HintFadeTime), { TextTransparency = 0 }):Play()
+			end)
+		end)
+	end)
+end
+
+local function startHintLoop()
+	if not sb.HintsEnabled then return end
+	hintToken += 1
+	local myToken = hintToken
+	hintMessageIndex = 0
+	task.spawn(function()
+		while isTimerActive and hintToken == myToken do
+			task.wait(sb.HintInterval)
+			if not isTimerActive or hintToken ~= myToken then return end
+			showHintMessage()
+		end
+	end)
+end
+
+local function stopHintLoop()
+	hintToken += 1
+	isShowingHint = false
+end
+
+
+-- ╔═══════════════════════════════════════════════════════════════════╗
+-- ║   🎮  دوال الـ UI                                               ║
+-- ╚═══════════════════════════════════════════════════════════════════╝
+
+local function updateStatusText(text)
+	stopHintLoop()
+	isShowingHint = false
+	statusText.TextTransparency = 0
+	statusText.Text             = text
+	statusText.TextColor3       = CONFIG.TextColor
+	statusBar.BackgroundColor3  = sb.BgColor
+end
+
+local function updateTimerDisplay(seconds)
+	currentTimerSeconds = seconds
+	isTimerActive = true
+	if not isShowingHint then displayTimer() end
+end
+
+local function showCountdown(text)
+	if not cd.Visible then return end
+	countdownLabel.Text             = text
+	countdownLabel.TextTransparency = 1
+	countdownStroke.Transparency    = 1
+	countdownLabel.Visible          = true
+	countdownLabel.TextColor3       = (text == "GO!") and cd.GoColor or CONFIG.TextColor
+	local origSize = UDim2.new(cd.Width, 0, cd.Height, 0)
+	countdownLabel.Size = UDim2.new(cd.Width * 0.5, 0, cd.Height * 0.5, 0)
+	TweenService:Create(countdownLabel, TweenInfo.new(cd.FadeInTime, Enum.EasingStyle.Back), {
+		TextTransparency = 0, Size = origSize
+	}):Play()
+	TweenService:Create(countdownStroke, TweenInfo.new(cd.FadeInTime), { Transparency = 0 }):Play()
+	task.delay(cd.DisplayDuration, function()
+		TweenService:Create(countdownLabel, TweenInfo.new(cd.FadeOutTime), { TextTransparency = 1 }):Play()
+		TweenService:Create(countdownStroke, TweenInfo.new(cd.FadeOutTime), { Transparency = 1 }):Play()
+		task.delay(cd.FadeOutTime + 0.05, function() countdownLabel.Visible = false end)
+	end)
+end
+
+-- ╔═══════════════════════════════════════════════════════════════════╗
+-- ║   ✅ إصلاح showWinnerUI — الصورة تتحمّل قبل ما يطلع الفريم    ║
+-- ╚═══════════════════════════════════════════════════════════════════╝
+
+local function showWinnerUI(winnerNameText, winnerUserId, winnerTeam)
+	if not wn.Visible then return end
+
+	isTimerActive = false
+	stopHintLoop()
+
+	local isRock    = (winnerTeam == "Rock")
+	local teamColor = isRock and wn.RockWinColor or wn.RunnerWinColor
+
+	winnerTitle.Text       = isRock and wn.RockText or wn.RunnerText
+	winnerTitle.TextColor3 = teamColor
+	winnerStroke.Color     = teamColor
+
+	winnerName.Text             = winnerNameText
+	winnerTeamLabel.Text        = isRock and wn.RockTeamText or wn.RunnerTeamText
+	winnerTeamLabel.TextColor3  = isRock and wn.RockTeamColor or wn.RunnerTeamColor
+
+	-- ✅ الإصلاح الرئيسي: نحمّل الصورة أولاً من الكاش أو السيرفر
+	avatarImg.Image = ""
+	avatarImg.BackgroundColor3 = wn.AvatarBgColor
+
+	if winnerUserId and winnerUserId > 0 then
+		-- نجيب الصورة (من الكاش لو موجودة = فوري، أو نحمّلها)
+		local cachedImg = getAvatarUrl(winnerUserId)
+		if cachedImg then
+			avatarImg.Image = cachedImg
+			avatarImg.BackgroundTransparency = 0
+		else
+			avatarImg.BackgroundColor3 = isRock and wn.RockFallbackColor or wn.RunnerFallbackColor
+		end
+	else
+		avatarImg.BackgroundColor3 = isRock and wn.RockFallbackColor or wn.RunnerFallbackColor
+	end
+
+	-- إشعار "فريقك يفوز"
+	if myTeam == winnerTeam and yw.Visible then
+		youWinFrame.BackgroundColor3     = teamColor
+		youWinFrame.Visible              = true
+		youWinFrame.BackgroundTransparency = 1
+		TweenService:Create(youWinFrame, TweenInfo.new(yw.FadeInTime, Enum.EasingStyle.Back), {
+			BackgroundTransparency = yw.BgTransparency
+		}):Play()
+		task.delay(yw.ShowDuration, function()
+			TweenService:Create(youWinFrame, TweenInfo.new(yw.FadeOutTime), { BackgroundTransparency = 1 }):Play()
+			task.delay(yw.FadeOutTime + 0.05, function() youWinFrame.Visible = false end)
+		end)
+	end
+
+	-- أنيميشن الفائز (الحين الصورة جاهزة قبل ما يطلع)
+	winnerFrame.Position = UDim2.new(0.5, 0, wn.PosY + wn.OffsetY, 0)
+	winnerFrame.Visible  = true
+	TweenService:Create(winnerFrame, TweenInfo.new(wn.AnimInTime, Enum.EasingStyle.Back), {
+		Position = UDim2.new(0.5, 0, wn.PosY, 0)
+	}):Play()
+	task.delay(wn.ShowDuration, function()
+		TweenService:Create(winnerFrame, TweenInfo.new(wn.AnimOutTime, Enum.EasingStyle.Quad), {
+			Position = UDim2.new(0.5, 0, wn.PosY - wn.OffsetY, 0)
+		}):Play()
+		task.delay(wn.AnimOutTime + 0.05, function() winnerFrame.Visible = false end)
+	end)
+end
+
+
+-- ╔═══════════════════════════════════════════════════════════════════╗
+-- ║   📡  استقبال الأحداث                                           ║
+-- ╚═══════════════════════════════════════════════════════════════════╝
+
+UpdateTeamCount.OnClientEvent:Connect(function(rockCount, runnerCount)
+	rockLabel.Text   = tc.RockEmoji .. " Rocks: " .. rockCount
+	runnerLabel.Text = tc.RunnerEmoji .. " Runners: " .. runnerCount
+end)
+
+AssignTeam.OnClientEvent:Connect(function(team) myTeam = team end)
+UpdateStatus.OnClientEvent:Connect(updateStatusText)
+StartCountdown.OnClientEvent:Connect(showCountdown)
+ShowWinner.OnClientEvent:Connect(function(n, id, t) showWinnerUI(n, id, t) end)
+
+local hintStarted = false
+UpdateTimer.OnClientEvent:Connect(function(seconds)
+	updateTimerDisplay(seconds)
+	if seconds > 0 then
+		if not hintStarted then
+			hintStarted = true
+			startHintLoop()
+		end
+	else
+		hintStarted = false
+		isTimerActive = false
+		stopHintLoop()
+	end
+end)
+
+
+task.spawn(function()
+	task.wait(1)
+	local ok, state = pcall(function() return SyncRaceState:InvokeServer() end)
+	if ok and state then
+		updateStatusText(state.currentStatus)
+		if state.raceTimer and state.raceTimer > 0 then
+			updateTimerDisplay(state.raceTimer)
+			startHintLoop()
+		end
+	end
+end)
+
+PlaySound.OnClientEvent:Connect(function(soundName)
+	playGameSound(soundName)
+end)
+
+
+local isInKickOff       = false
+local originalJumpPower = 50
+
+KickOffState.OnClientEvent:Connect(function(state)
+	isInKickOff = state
+	local char = localPlayer.Character
+	if char then
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum then
+			if isInKickOff then
+				hum.JumpPower  = 0
+				hum.JumpHeight = 0
+			else
+				hum.JumpPower  = originalJumpPower
+				hum.JumpHeight = 7.2
+			end
+		end
+	end
+end)
+
+
+print("[RaceUI] v3 Avatar Preload + Cache Ready!")
